@@ -62,8 +62,20 @@ class Boosting:
         ----------
         Эта функция добавляет новую модель и обновляет ансамбль.
         """
-        self.gammas.append()
-        self.models.append()
+        indices = np.random.choice(np.arange(x.shape[0]), size=int(x.shape[0] * self.subsample), replace=True)
+        x_bootstrap = x[indices]
+        y_bootstrap = y[indices]
+
+        model = self.base_model_class(**self.base_model_params)
+        residuals = y_bootstrap - predictions[indices]
+        model.fit(x_bootstrap, residuals)
+
+        new_predictions = model.predict(x)
+
+        gamma = self.find_optimal_gamma(y, predictions, new_predictions)
+        self.gammas.append(gamma)
+        self.models.append(model)
+
 
     def fit(self, x_train, y_train, x_valid, y_valid):
         """
@@ -83,12 +95,32 @@ class Boosting:
         train_predictions = np.zeros(y_train.shape[0])
         valid_predictions = np.zeros(y_valid.shape[0])
 
-        for _ in range(self.n_estimators):
-            self.fit_new_base_model()
+        for i in range(self.n_estimators):
+            self.fit_new_base_model(x_train, y_train, train_predictions)
+            train_predictions += self.learning_rate * self.gammas[-1] * self.models[-1].predict(x_train)
+            valid_predictions += self.learning_rate * self.gammas[-1] * self.models[-1].predict(x_valid)
+
+            train_loss = self.loss_fn(y_train, train_predictions)
+            valid_loss = self.loss_fn(y_valid, valid_predictions)
+
+            self.history['train_loss'].append(train_loss)
+            self.history['valid_loss'].append(valid_loss)
 
             if self.early_stopping_rounds is not None:
+                if valid_loss < self.validation_loss.min():
+                    self.validation_loss = np.roll(self.validation_loss, -1)
+                    self.validation_loss[-1] = valid_loss
+                else:
+                    if i >= self.early_stopping_rounds:
+                        print(f'Early stopping at iteration {i}')
+                        break
 
         if self.plot:
+            plt.plot(self.history['train_loss'], label='Train Loss')
+            plt.plot(self.history['valid_loss'], label='Valid Loss')
+            plt.legend()
+            plt.show()
+
 
     def predict_proba(self, x):
         """
@@ -104,8 +136,12 @@ class Boosting:
         probabilities : array-like, форма (n_samples, n_classes)
             Вероятности для каждого класса.
         """
+        predictions = np.zeros(x.shape[0])
         for gamma, model in zip(self.gammas, self.models):
-            pass
+            predictions += self.learning_rate * gamma * model.predict(x)
+        probabilities = self.sigmoid(predictions)
+        return np.vstack((1 - probabilities, probabilities)).T
+
 
     def find_optimal_gamma(self, y, old_predictions, new_predictions) -> float:
         """
@@ -151,4 +187,8 @@ class Boosting:
         ----------
         Важность признаков определяется по вкладу каждого признака в финальную модель.
         """
-        pass
+        importances = np.zeros(self.models[0].feature_importances_.shape)
+        for model in self.models:
+            importances += model.feature_importances_
+        importances /= len(self.models)
+        return importances / importances.sum()
